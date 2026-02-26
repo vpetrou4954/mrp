@@ -1,12 +1,67 @@
 # -*- coding: utf-8 -*-
-from flask import Flask, render_template_string, request, send_file, redirect, url_for
+from flask import Flask, render_template_string, request, send_file, redirect, url_for, session
 from werkzeug.middleware.proxy_fix import ProxyFix
+from functools import wraps
 import io
 import pandas as pd
 import re
 from datetime import datetime
+import os
 
 app = Flask(__name__)
+app.secret_key = os.environ.get('MRP_SECRET_KEY', 'change-this-secret-key-in-production-!@#$')
+
+# ── Login credentials ─────────────────────────────────────────────────────────
+APP_USERNAME = os.environ.get('MRP_USER', 'admin')
+APP_PASSWORD = os.environ.get('MRP_PASS', 'mrp2026!')
+
+# ── Login required decorator ──────────────────────────────────────────────────
+def login_required(f):
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not session.get('logged_in'):
+            return redirect(url_for('login', next=request.url))
+        return f(*args, **kwargs)
+    return decorated
+
+# ── Login template ────────────────────────────────────────────────────────────
+LOGIN_TEMPLATE = '''
+<!DOCTYPE html>
+<html lang="el">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>MRP — Login</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: Arial, sans-serif; background: #f0f2f5; display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+  .card { background: #fff; border-radius: 8px; box-shadow: 0 2px 16px rgba(0,0,0,.12); padding: 40px 36px; width: 340px; }
+  h1 { font-size: 1.4rem; margin-bottom: 6px; color: #111; }
+  .subtitle { font-size: .85rem; color: #666; margin-bottom: 28px; }
+  label { display: block; font-size: .82rem; font-weight: bold; color: #444; margin-bottom: 4px; }
+  input[type=text], input[type=password] { width: 100%; padding: 10px 12px; border: 1px solid #ccc; border-radius: 5px; font-size: .95rem; margin-bottom: 16px; outline: none; transition: border .2s; }
+  input:focus { border-color: #000; }
+  button { width: 100%; padding: 11px; background: #000; color: #fff; border: none; border-radius: 5px; font-size: 1rem; font-weight: bold; cursor: pointer; }
+  button:hover { background: #222; }
+  .error { background: #fff0f0; border: 1px solid #f5c6c6; border-radius: 5px; padding: 10px 12px; margin-bottom: 16px; color: #c0392b; font-size: .88rem; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>📊 MRP</h1>
+  <p class="subtitle">Onepharma — Σύστημα Παραγωγής</p>
+  {% if error %}<div class="error">❌ {{ error }}</div>{% endif %}
+  <form method="post">
+    <label for="username">Χρήστης</label>
+    <input type="text" id="username" name="username" autofocus autocomplete="username">
+    <label for="password">Κωδικός</label>
+    <input type="password" id="password" name="password" autocomplete="current-password">
+    <button type="submit">Είσοδος</button>
+  </form>
+</div>
+</body>
+</html>
+'''
 
 # Greek-style number formatter and Jinja filter
 def format_gr(value, decimals: int = 2):
@@ -1285,7 +1340,10 @@ TEMPLATE = r"""
 <div class="container">
     <div class="page-header">
         <h2>Υπολογισμός Υλικών Παραγωγής</h2>
-        <button type="button" onclick="openManualModal()" style="padding:7px 16px;">⚙️ Χειροκίνητα</button>
+        <div style="display:flex; gap:8px; align-items:center;">
+            <button type="button" onclick="openManualModal()" style="padding:7px 16px;">⚙️ Χειροκίνητα</button>
+            <a href="{{ url_for('logout') }}" style="padding:7px 14px; border:1px solid #ccc; border-radius:4px; background:#f8f8f8; color:#555; text-decoration:none; font-size:.88rem;">🚪 Αποσύνδεση</a>
+        </div>
     </div>
     <form method="post">
         <input type="hidden" name="mode" id="mode_input" value="{{ mode }}">
@@ -1753,6 +1811,7 @@ HOME_TEMPLATE = """
 <body>
     <div class="card">
         <h2>Καλώς ήρθες</h2>
+        <p style="font-size:.85rem; color:#888; margin-bottom:12px;">Συνδεδεμένος ως <strong>{{ session.get('logged_in') and 'admin' or '' }}</strong> &nbsp;·&nbsp; <a href="{{ url_for('logout') }}" style="color:#c0392b;">🚪 Αποσύνδεση</a></p>
         <p>Προχώρα στον υπολογισμό των υλικών παραγωγής.</p>
         <p><a class="btn" href="{{ url_for('index') }}">Υπολογισμός Υλικών Παραγωγής</a></p>
     {# INACTIVE BUTTONS - uncomment to re-enable:
@@ -1793,7 +1852,25 @@ HOME_TEMPLATE = """
 """
 
 
+@app.route('/login', methods=['GET', 'POST'])
+def login():
+    error = None
+    if request.method == 'POST':
+        if request.form.get('username') == APP_USERNAME and request.form.get('password') == APP_PASSWORD:
+            session['logged_in'] = True
+            session.permanent = False
+            next_url = request.args.get('next') or url_for('home')
+            return redirect(next_url)
+        error = 'Λάθος χρήστης ή κωδικός.'
+    return render_template_string(LOGIN_TEMPLATE, error=error)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
 @app.route('/')
+@login_required
 def home():
     msg_ok  = request.args.get('msg_ok', '')
     msg_err = request.args.get('msg_err', '')
@@ -1801,6 +1878,7 @@ def home():
 
 
 @app.route('/upload', methods=['POST'])
+@login_required
 def upload_files():
     global df, sales_df, stock_df, procure_df
     uploaded = []
@@ -1856,6 +1934,7 @@ def upload_files():
 
 
 @app.route('/app', methods=['GET', 'POST'])
+@login_required
 def index():
     materials = None
     details = None
@@ -2210,6 +2289,7 @@ def render_kr_missing_report(materials):
     return render_template_string(KR_MISSING_TEMPLATE, materials=filtered_materials)
 
 @app.route('/kr-missing-excel', methods=['POST'])
+@login_required
 def kr_missing_excel():
     """Download KR & Missing report as Excel"""
     import json
